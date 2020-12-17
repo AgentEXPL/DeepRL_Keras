@@ -93,14 +93,14 @@ class A2CAgent:
   for update in range(updates):
    for step in range(batch_sz):
     observations[step] = next_obs.copy()
-    actions[step], values[step] = self.model.action_value(next_obs[None, :]) # None means what?
+    actions[step], values[step] = self.model.get_nextAction_v(next_obs[None, :]) # None means what?
     next_obs, rewards[step], dones[step], _ = env.step(actions[step])
     ep_rews[-1] += rewards[step]
     if dones[step]:
      ep_rews.append(0.0)
      next_obs = env.reset()
-   _, next_value = self.model.action_value(next_obs[None, :])
-   returns, advs = self._returns_advantages(rewards, dones, values, next_value)
+   _, next_value = self.model.get_nextAction_v(next_obs[None, :])
+   returns, advs = self._rets_advs(rewards, dones, values, next_value)
    # a trick to input actions and advantages through same API
    acts_and_advs = np.concatenate([actions[:, None], advs[:, None]], axis=-1)
    # performs a full training step on the collected batch
@@ -122,10 +122,10 @@ class A2CAgent:
 
 import gym
 env = gym.make('CartPole-v0')
-model = ACModel(num_actions=env.action_space.n)
+model = ACModel(env.action_space.n, 0, [128], 'relu', None, [128], 'relu', None)
 obs = env.reset()
 # no feed_dict or tf.Session() needed at all
-action, value = model.action_value(obs[None, :])
+action, value = model.get_nextAction_v(obs[None, :])
 print(action, value) # [1] [-0.00145713]
 agent = A2CAgent(model)
 rewards_sum = agent.test(env)
