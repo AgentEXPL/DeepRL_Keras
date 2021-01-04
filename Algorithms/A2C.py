@@ -14,7 +14,7 @@ class ACModel(tf.keras.Model):
     def __init__(self, act_dim, is_continuious, act_hidden_size, act_hidden_activation, act_output_activation, v_hidden_size, v_hidden_activation, v_output_activation, **kwargs):
         super().__init__('A2C_net') # name is A2C_net
         self.act_dim = act_dim
-        self.is_continuious = is_continuious # actions are descrete!!!
+        self.is_continuious = is_continuious # This equals to 0, if actions are descrete!!! In this file, only descrete actions are currently support.
         # the layers of the network model is defined in init function
         self.act_hidden_layer = kl.Dense(act_hidden_size, activation = act_hidden_activation)
         self.v_hidden_layer = kl.Dense(v_hidden_size, activation = v_hidden_activation)
