@@ -1,3 +1,8 @@
+'''
+The basis of this code can be found in https://developer.aliyun.com/article/688842 
+Some changes and corrections have been made according my unsderstanding.
+'''
+
 import tensorflow as tf
 import matplotlib.pyplot as plt
 import numpy as np
