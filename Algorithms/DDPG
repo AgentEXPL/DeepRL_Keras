@@ -1,4 +1,47 @@
 '''
-The basis of this code can be found in 
-
+The basis of this code can be found in https://github.com/NovemberChopin/RL_Tutorial/blob/master/code/DDPG.py 
+Some changes and corrections have been made according my unsderstanding.
 '''
+
+import tensorflow as tf
+import matplotlib.pyplot as plt
+import numpy as np
+import tensorflow.keras.layers as kl
+import tensorflow.keras.losses as kls
+import tensorflow.keras.optimizers as ko
+import gym
+import logging
+from gym import wrappers
+import random
+
+class ReplayBuffer:
+		def __init__(self, buffer_size):
+				self.buffer_size = buffer_size
+				self.buffer = []
+				self.pointer = 0
+				
+		def push(self, state, action, reward, next_state, done):
+				if len(self.buffer) < self.buffer_size:
+						self.buffer.append(None)
+				self.buffer[self.pointer] = (state, action, reward, next_state, done)
+				self.pointer = int((self.pointer+1) % self.buffer_size)
+				
+		def rand_sample(self, batch_size):
+				batch = random.sample(self.buffer, batch_size)
+				batch_state, batch_action, batch_reward, batch_next_state, batch_done = map(np.stack, zip(*batch))
+			
+
+class ACModel(tf.keras.Model):
+
+     
+
+class DDPGAgent:
+    
+
+
+
+    
+    
+if __name__ == '__main__':
+    logging.getLogger().setLevel(logging.DEBUG)
+
