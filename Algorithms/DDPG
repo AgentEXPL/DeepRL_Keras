@@ -32,16 +32,73 @@ class ReplayBuffer:
 			
 
 class ACModel(tf.keras.Model):
-
-     
+    def __init__(self, act_dim, is_continuious, act_hidden_size, act_hidden_activation, act_output_activation, v_hidden_size, v_hidden_activation, v_output_activation, **kwargs):
+        super().__init__('A2C_net') # name is A2C_net
+        self.act_dim = act_dim
+        self.is_continuious = is_continuious # This equals to 0, if actions are descrete!!! In this file, only descrete actions are currently support.
+        # the layers of the network model is defined in init function
+        self.act_hidden_layer = kl.Dense(act_hidden_size, activation = act_hidden_activation)
+        self.v_hidden_layer = kl.Dense(v_hidden_size, activation = v_hidden_activation)
+        self.act_output_layer = kl.Dense(act_dim, activation = act_output_activation)
+        self.v_output_layer = kl.Dense(1, activation = v_output_activation) # shall be tanh
+        self.action_range = kwargs.get('action_range') # shall be included if is_continuious == 1
+        self.scale_layer = kl.Lambda(lambda x: x * kwargs.get('action_range'))
+        self.var = kwargs.get('var')
+        
+    def call(self, inputs): 
+    # call function is for defining forward propagation, inputs may be a mini-batch of states/observations, return the outputs
+    # actor network represents the policy, the output from actor network is logits if actions are descrete
+        x = tf.convert_to_tensor(inputs, dtype=tf.float32)
+        x = self.act_hidden_layer(x)
+        x = self.act_output_layer(x)
+        if self.is_continuious:
+            self.policy = self.scale_layer(x)
+        else:
+            self.policy = x
+    
+    # critic network reprents the state value, the output from critic network is the value of the state
+        y = tf.convert_to_tensor(inputs, dtype=tf.float32)
+        y = self.v_hidden_layer(y)
+        self.v = self.v_output_layer(y)
+        return self.policy, self.v
+  
+    def get_nextAction_v(self, obs, **kwargs): #obs is a batch (batch_size=1) of samples
+        policy, v = self.predict(obs)
+        if self.is_continuious:
+            action = np.clip(np.random.normal(policy, self.var), -self.action_range, self.action_range).astype(np.float32)
+            return np.squeeze(action, axis=0), np.squeeze(v, axis=-1) # shapes are (act_dim,) , (batch_size,) respectively
+        else:
+            action = tf.squeeze(tf.random.categorical(policy, 1), axis=-1) #the shape is (batch_size,)
+            return np.squeeze(action, axis=-1), np.squeeze(v, axis=-1) # shapes are (,) , (batch_size,) respectively
+    # Note that the shape of v is (batch_size=1,), it doesn't matter since this array will be converted to a scalar in values[step].
 
 class DDPGAgent:
-    
-
+    def __init__(self, model):
+        self.params = {'value': 0.5, 'entropy': 0.0001, 'gamma': 0.99}
+        self.model = model
+        self.optimizer=ko.RMSprop(lr=0.007)
 
 
     
     
 if __name__ == '__main__':
     logging.getLogger().setLevel(logging.DEBUG)
+
+
+    env =gym.make('Pendulum-v0')
+    if isinstance(env.action_space, gym.spaces.Discrete):
+        is_continuious = False
+        act_dim = env.action_space.n
+        model = ACModel(act_dim, is_continuious, 128, 'relu', None, 128, 'relu', None)
+    elif isinstance(env.action_space, gym.spaces.Box):
+        is_continuious = True
+        act_dim = env.action_space.shape[0]
+        log_standard = -3*np.ones(act_dim, dtype=np.float32)
+        model = ACModel(act_dim, is_continuious, 128, 'relu', None, 128, 'relu', 'tanh', log_std= log_standard)
+    
+
+    obs = env.reset()
+    action, value = model.get_nextAction_v(obs[None, :])
+    print(action, value) # 
+
 
