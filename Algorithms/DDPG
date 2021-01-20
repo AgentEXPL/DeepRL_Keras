@@ -14,33 +14,32 @@ import logging
 from gym import wrappers
 import random
 
-class ReplayBuffer:
-		def __init__(self, buffer_size):
-				self.buffer_size = buffer_size
-				self.buffer = []
-				self.pointer = 0
-				
-		def push(self, state, action, reward, next_state, done):
-				if len(self.buffer) < self.buffer_size:
-						self.buffer.append(None)
-				self.buffer[self.pointer] = (state, action, reward, next_state, done)
-				self.pointer = int((self.pointer+1) % self.buffer_size)
-				
-		def rand_sample(self, batch_size):
-				batch = random.sample(self.buffer, batch_size)
-				batch_state, batch_action, batch_reward, batch_next_state, batch_done = map(np.stack, zip(*batch))
-			
 
-class ACModel(tf.keras.Model):
-    def __init__(self, act_dim, is_continuious, act_hidden_size, act_hidden_activation, act_output_activation, v_hidden_size, v_hidden_activation, v_output_activation, **kwargs):
-        super().__init__('A2C_net') # name is A2C_net
+
+class ReplayBuffer:
+    def __init__(self, buffer_size):
+        self.buffer_size = buffer_size
+        self.buffer = []
+        self.pointer = 0
+
+    def push(self, state, action, reward, next_state, done):
+        if len(self.buffer) < self.buffer_size:
+            self.buffer.append(None)
+        self.buffer[self.pointer] = (state, action, reward, next_state, done)
+        self.pointer = int((self.pointer+1) % self.buffer_size)
+
+    def random_sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        batch_state, batch_action, batch_reward, batch_next_state, batch_done = map(np.stack, zip(*batch))
+
+class Actor(tf.keras.Model):
+    def __init__(self, act_dim, is_continuious, act_hidden_size, act_hidden_activation, act_output_activation, **kwargs):
+        super().__init__('Actor_net') # name is A2C_net
         self.act_dim = act_dim
         self.is_continuious = is_continuious # This equals to 0, if actions are descrete!!! In this file, only descrete actions are currently support.
         # the layers of the network model is defined in init function
         self.act_hidden_layer = kl.Dense(act_hidden_size, activation = act_hidden_activation)
-        self.v_hidden_layer = kl.Dense(v_hidden_size, activation = v_hidden_activation)
-        self.act_output_layer = kl.Dense(act_dim, activation = act_output_activation)
-        self.v_output_layer = kl.Dense(1, activation = v_output_activation) # shall be tanh
+        self.act_output_layer = kl.Dense(act_dim, activation = act_output_activation) # shall be tanh if is_continuious
         self.action_range = kwargs.get('action_range') # shall be included if is_continuious == 1
         self.scale_layer = kl.Lambda(lambda x: x * kwargs.get('action_range'))
         self.var = kwargs.get('var')
@@ -55,29 +54,111 @@ class ACModel(tf.keras.Model):
             self.policy = self.scale_layer(x)
         else:
             self.policy = x
-    
-    # critic network reprents the state value, the output from critic network is the value of the state
-        y = tf.convert_to_tensor(inputs, dtype=tf.float32)
-        y = self.v_hidden_layer(y)
-        self.v = self.v_output_layer(y)
-        return self.policy, self.v
+
+        return self.policy
   
-    def get_nextAction_v(self, obs, **kwargs): #obs is a batch (batch_size=1) of samples
-        policy, v = self.predict(obs)
+    def get_nextAction(self, obs, **kwargs): #obs is a batch (batch_size=1) of samples
+        policy = self.predict(obs)
         if self.is_continuious:
             action = np.clip(np.random.normal(policy, self.var), -self.action_range, self.action_range).astype(np.float32)
-            return np.squeeze(action, axis=0), np.squeeze(v, axis=-1) # shapes are (act_dim,) , (batch_size,) respectively
+            return np.squeeze(action, axis=0) # shapes are (act_dim,) 
         else:
             action = tf.squeeze(tf.random.categorical(policy, 1), axis=-1) #the shape is (batch_size,)
-            return np.squeeze(action, axis=-1), np.squeeze(v, axis=-1) # shapes are (,) , (batch_size,) respectively
-    # Note that the shape of v is (batch_size=1,), it doesn't matter since this array will be converted to a scalar in values[step].
+            return np.squeeze(action, axis=-1) # shapes are (,) 
 
+
+    
+    
+class Critic(tf.keras.Model):
+    def __init__(self, act_dim, q_hidden_size, q_hidden_activation, q_output_activation, **kwargs):
+        super().__init__('A2C_net') # name is A2C_net
+        self.act_dim = act_dim
+        # the layers of the network model is defined in init function
+        self.q_hidden_layer = kl.Dense(q_hidden_size, activation = q_hidden_activation)
+        self.q_output_layer = kl.Dense(1, activation = q_output_activation) 
+        
+    def call(self, inputs): 
+    # call function is for defining forward propagation, inputs may be a mini-batch of states/observations, return the outputs
+    # critic network reprents the q(s,a) value, the output from critic network is the value of q(s,a)
+        y = tf.convert_to_tensor(inputs, dtype=tf.float32)
+        y = self.q_hidden_layer(y)
+        self. = self.q_output_layer(y)
+        return self.q
+  
+    def get_q(self, obs, **kwargs): #obs is a batch (batch_size=1) of samples
+        q = self.predict(obs)
+        return np.squeeze(q, axis=-1) # shape is (batch_size,) 
+    # Note that the shape of output is (batch_size=1,), it doesn't matter since this array will be converted to a scalar in values[step].
+
+    
+    
+    
+    
+def copy_para(from_model, to_model):
+    for i, j in zip(from_model.trainable_weights, to_model.trainable_weights):
+        j.assign(i)
+    
 class DDPGAgent:
-    def __init__(self, model):
-        self.params = {'value': 0.5, 'entropy': 0.0001, 'gamma': 0.99}
-        self.model = model
+    def __init__(self, actor, target_actor, critic, target_critic, replay_buffer):
+        self.params = {'value': 0.5, 'entropy': 0.0001, 'gamma': 0.99, 'TAU': 0.01}
+        self.actor = actor
+        self.target_actor = target_actor
+        self.critic = critic
+        self.target_critic = target_critic
+        copy_para(self.actor, self.target_actor)
+        copy_para(self.critic, self.target_critic)
+        
         self.optimizer=ko.RMSprop(lr=0.007)
+        self.ema = tf.train.ExponentialMovingAverage(decay=1 - self.params['TAU'])
+        self.replay_buffer = replay_buffer
+    
+    def ema_update(self):
+        paras = self.actor.trainable_weights + self.critic.trainable_weights
+        self.ema.apply(paras)
+        for i, j in zip(self.target_actor.trainable_weights + self.target_critic.trainable_weights, paras):
+            i.assign(self.ema.average(j))
+    
+    def learn(self, batch_sz=32):
+        states, actions, rewards, states_, done = self.replay_buffer.sample(batch_sz)
+        rewards = rewards[:, np.newaxis]
+        done = done[:, np.newaxis]
+        
+        with tf.GradientTape() as tape:
+            actions_= self.target_actor(states_)
+            q_ = self.target_critic([states_, actions_])
+            target = rewards + (1 - done) * self.params['gamma'] * q_
+            q_pred = self.critic([states, actions])
+            td_error = tf.losses.mean_squared_error(target, q_pred)
+        critic_grads = tape.gradient(td_error, self.critic.trainable_weights)
+        self.critic_opt.apply_gradients(zip(critic_grads, self.critic.trainable_weights))
 
+        with tf.GradientTape() as tape:
+            actions = self.actor(states)
+            q = self.critic([states, actions])
+            actor_loss = -tf.reduce_mean(q)  # maximize the q
+        actor_grads = tape.gradient(actor_loss, self.actor.trainable_weights)
+        self.actor_opt.apply_gradients(zip(actor_grads, self.actor.trainable_weights))
+        
+        self.ema_update()
+        
+ 
+ 
+    def train(self, env, batch_sz=32, updates=1000): 
+ 
+  
+            
+
+
+
+    def test(self, env, render=True):
+        outdir = '/tmp/A2C-Cartpole-agent-results'
+        env = wrappers.Monitor(env, directory=outdir, force=True) # This is for showing the result as a video.
+        obs, done, ep_reward = env.reset(), False, 0
+        while not done:
+            action, _ = self.model.get_nextAction_v(obs[None, :])
+            obs, reward, done, _ = env.step(action)
+            ep_reward += reward
+        return ep_reward
 
     
     
@@ -100,5 +181,7 @@ if __name__ == '__main__':
     obs = env.reset()
     action, value = model.get_nextAction_v(obs[None, :])
     print(action, value) # 
+
+    
 
 
