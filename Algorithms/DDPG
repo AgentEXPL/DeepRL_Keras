@@ -82,16 +82,13 @@ class Critic(tf.keras.Model):
     # critic network reprents the q(s,a) value, the output from critic network is the value of q(s,a)
         y = tf.convert_to_tensor(inputs, dtype=tf.float32)
         y = self.q_hidden_layer(y)
-        self. = self.q_output_layer(y)
+        self.q = self.q_output_layer(y)
         return self.q
   
     def get_q(self, obs, **kwargs): #obs is a batch (batch_size=1) of samples
-        q = self.predict(obs)
-        return np.squeeze(q, axis=-1) # shape is (batch_size,) 
-    # Note that the shape of output is (batch_size=1,), it doesn't matter since this array will be converted to a scalar in values[step].
-
-    
-    
+        q = self.predict(obs) # shape is (batch_size,1)
+        return np.squeeze(q, axis=0) # shape is (1,) 
+  
     
     
 def copy_para(from_model, to_model):
@@ -143,11 +140,26 @@ class DDPGAgent:
         
  
  
-    def train(self, env, batch_sz=32, updates=1000): 
- 
-  
-            
-
+    def train(self, env, batch_sz=32, episodes_num=1000, maxStepsPerEpisode = 200):
+        ep_rews = []
+        for episode in range(episodes_num):
+            ep_rews.append(0.0)
+            next_obs = env.reset()
+            state = next_obs.copy()
+            for step in range(maxStepsPerEpisode):
+                action = self.model.actor.get_nextAction
+                next_obs, reward, done, info = env.step(action)
+                state_=next_obs.copy()
+                done = 1 if done is True else 0
+                buffer.push(state, action, reward, state_, done)
+                if len(buffer) >= self.replay_buffer.buffer_size:
+                    self.learn()
+                
+                state = state_
+                ep_rews[-1] += reward
+                if done:
+                    break
+        return ep_rews
 
 
     def test(self, env, render=True):
@@ -155,7 +167,7 @@ class DDPGAgent:
         env = wrappers.Monitor(env, directory=outdir, force=True) # This is for showing the result as a video.
         obs, done, ep_reward = env.reset(), False, 0
         while not done:
-            action, _ = self.model.get_nextAction_v(obs[None, :])
+            action = self.actor.get_nextAction(obs[None, :])
             obs, reward, done, _ = env.step(action)
             ep_reward += reward
         return ep_reward
@@ -167,21 +179,37 @@ if __name__ == '__main__':
 
 
     env =gym.make('Pendulum-v0')
-    if isinstance(env.action_space, gym.spaces.Discrete):
-        is_continuious = False
-        act_dim = env.action_space.n
-        model = ACModel(act_dim, is_continuious, 128, 'relu', None, 128, 'relu', None)
-    elif isinstance(env.action_space, gym.spaces.Box):
+
+    if isinstance(env.action_space, gym.spaces.Box):
         is_continuious = True
         act_dim = env.action_space.shape[0]
-        log_standard = -3*np.ones(act_dim, dtype=np.float32)
-        model = ACModel(act_dim, is_continuious, 128, 'relu', None, 128, 'relu', 'tanh', log_std= log_standard)
-    
-
+        VAR = 2
+        RANGE = env.action_space.high
+        actor = Actor(act_dim, is_continuious, 128, 'relu', 'tanh', var=VAR, action_range=RANGE)
+        critic = Critic(act_dim, 128, 'relu', None)
+        target_actor = Actor(act_dim, is_continuious, 128, 'relu', 'tanh', var=VAR, action_range=RANGE)
+        target_critic = Critic(act_dim, 128, 'relu', None)
+        
     obs = env.reset()
-    action, value = model.get_nextAction_v(obs[None, :])
-    print(action, value) # 
-
+    state = obs.copy()
+    action = actor.get_nextAction(state[None, :])
+    q = critic.get_q([state, action][None, :])
+    target_action = actor.get_nextAction(state[None, :])
+    target_q = critic.get_q([state, action][None, :])
+    print(action, q, target_action, target_q) # 
     
-
-
+    MEMORY_CAPACITY = 10000
+    replay_buffer = ReplayBuffer(MEMORY_CAPACITY)
+    agent = DDPGAgent(actor, target_actor, critic, target_critic, replay_buffer)
+    
+    rewards_sum = agent.test(env)
+    print("%d out of 200" % rewards_sum) # The score in one test with random agent.
+    rewards_history = agent.train(env)
+    print("Finished training, testing...")
+    print("%d out of 200" % agent.test(env)) # The score in one test with trained agent.
+    
+    #Plot the rewards of history episodes during tranining
+    plt.plot(np.arange(0,len(rewards_history),1), rewards_history[::1])
+    plt.xlabel('Episode')
+    plt.ylabel('Total Reward')
+    plt.show
