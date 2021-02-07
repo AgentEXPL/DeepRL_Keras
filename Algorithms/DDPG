@@ -14,6 +14,8 @@ import logging
 from gym import wrappers
 import random
 
+LR_A = 0.001  # learning rate for actor
+LR_C = 0.002  # learning rate for critic
 
 
 class ReplayBuffer:
@@ -31,7 +33,11 @@ class ReplayBuffer:
     def random_sample(self, batch_size):
         batch = random.sample(self.buffer, batch_size)
         batch_state, batch_action, batch_reward, batch_next_state, batch_done = map(np.stack, zip(*batch))
+        return batch_state, batch_action, batch_reward, batch_next_state, batch_done
 
+    def __len__(self):
+        return len(self.buffer)
+    
 class Actor(tf.keras.Model):
     def __init__(self, act_dim, is_continuious, act_hidden_size, act_hidden_activation, act_output_activation, **kwargs):
         super().__init__('Actor_net') # name is A2C_net
@@ -39,6 +45,7 @@ class Actor(tf.keras.Model):
         self.is_continuious = is_continuious # This equals to 0, if actions are descrete!!! In this file, only descrete actions are currently support.
         # the layers of the network model is defined in init function
         self.act_hidden_layer = kl.Dense(act_hidden_size, activation = act_hidden_activation)
+        self.act_hidden_layer_2 = kl.Dense(act_hidden_size, activation = act_hidden_activation)
         self.act_output_layer = kl.Dense(act_dim, activation = act_output_activation) # shall be tanh if is_continuious
         self.action_range = kwargs.get('action_range') # shall be included if is_continuious == 1
         self.scale_layer = kl.Lambda(lambda x: x * kwargs.get('action_range'))
@@ -49,6 +56,7 @@ class Actor(tf.keras.Model):
     # actor network represents the policy, the output from actor network is logits if actions are descrete
         x = tf.convert_to_tensor(inputs, dtype=tf.float32)
         x = self.act_hidden_layer(x)
+        x = self.act_hidden_layer_2(x)
         x = self.act_output_layer(x)
         if self.is_continuious:
             self.policy = self.scale_layer(x)
@@ -60,7 +68,7 @@ class Actor(tf.keras.Model):
     def get_nextAction(self, obs, **kwargs): #obs is a batch (batch_size=1) of samples
         policy = self.predict(obs)
         if self.is_continuious:
-            action = np.clip(np.random.normal(policy, self.var), -self.action_range, self.action_range).astype(np.float32)
+            action = np.clip(np.random.normal(policy, self.var), -self.action_range, self.action_range)
             return np.squeeze(action, axis=0) # shapes are (act_dim,) 
         else:
             action = tf.squeeze(tf.random.categorical(policy, 1), axis=-1) #the shape is (batch_size,)
@@ -75,13 +83,15 @@ class Critic(tf.keras.Model):
         self.act_dim = act_dim
         # the layers of the network model is defined in init function
         self.q_hidden_layer = kl.Dense(q_hidden_size, activation = q_hidden_activation)
+        self.q_hidden_layer_2 = kl.Dense(q_hidden_size, activation = q_hidden_activation)
         self.q_output_layer = kl.Dense(1, activation = q_output_activation) 
         
     def call(self, inputs): 
     # call function is for defining forward propagation, inputs may be a mini-batch of states/observations, return the outputs
     # critic network reprents the q(s,a) value, the output from critic network is the value of q(s,a)
-        y = tf.convert_to_tensor(inputs, dtype=tf.float32)
+        y = kl.concatenate(inputs, axis = -1)
         y = self.q_hidden_layer(y)
+        y = self.q_hidden_layer_2(y)
         self.q = self.q_output_layer(y)
         return self.q
   
@@ -97,7 +107,7 @@ def copy_para(from_model, to_model):
     
 class DDPGAgent:
     def __init__(self, actor, target_actor, critic, target_critic, replay_buffer):
-        self.params = {'value': 0.5, 'entropy': 0.0001, 'gamma': 0.99, 'TAU': 0.01}
+        self.params = {'value': 0.5, 'entropy': 0.0001, 'gamma': 0.9, 'TAU': 0.01}
         self.actor = actor
         self.target_actor = target_actor
         self.critic = critic
@@ -105,7 +115,9 @@ class DDPGAgent:
         copy_para(self.actor, self.target_actor)
         copy_para(self.critic, self.target_critic)
         
-        self.optimizer=ko.RMSprop(lr=0.007)
+        #self.optimizer=ko.RMSprop(lr=0.007)
+        self.actor_opt = ko.Adam(learning_rate = LR_A)
+        self.critic_opt = ko.Adam(learning_rate = LR_C)
         self.ema = tf.train.ExponentialMovingAverage(decay=1 - self.params['TAU'])
         self.replay_buffer = replay_buffer
     
@@ -116,7 +128,10 @@ class DDPGAgent:
             i.assign(self.ema.average(j))
     
     def learn(self, batch_sz=32):
-        states, actions, rewards, states_, done = self.replay_buffer.sample(batch_sz)
+        
+        self.actor.var *= .9995
+        
+        states, actions, rewards, states_, done = self.replay_buffer.random_sample(batch_sz)
         rewards = rewards[:, np.newaxis]
         done = done[:, np.newaxis]
         
@@ -125,7 +140,7 @@ class DDPGAgent:
             q_ = self.target_critic([states_, actions_])
             target = rewards + (1 - done) * self.params['gamma'] * q_
             q_pred = self.critic([states, actions])
-            td_error = tf.losses.mean_squared_error(target, q_pred)
+            td_error = kls.MeanSquaredError()(target, q_pred)
         critic_grads = tape.gradient(td_error, self.critic.trainable_weights)
         self.critic_opt.apply_gradients(zip(critic_grads, self.critic.trainable_weights))
 
@@ -140,25 +155,31 @@ class DDPGAgent:
         
  
  
-    def train(self, env, batch_sz=32, episodes_num=1000, maxStepsPerEpisode = 200):
+    def train(self, env, batch_sz=32, episodes_num=200, maxStepsPerEpisode = 200):
         ep_rews = []
         for episode in range(episodes_num):
             ep_rews.append(0.0)
             next_obs = env.reset()
             state = next_obs.copy()
             for step in range(maxStepsPerEpisode):
-                action = self.model.actor.get_nextAction
+                action = self.actor.get_nextAction(state[None,:])
                 next_obs, reward, done, info = env.step(action)
                 state_=next_obs.copy()
                 done = 1 if done is True else 0
-                buffer.push(state, action, reward, state_, done)
-                if len(buffer) >= self.replay_buffer.buffer_size:
-                    self.learn()
+                replay_buffer.push(state, action, reward, state_, done)
+                
+                if len(replay_buffer) >= self.replay_buffer.buffer_size:
+                    self.learn(batch_sz)
                 
                 state = state_
                 ep_rews[-1] += reward
                 if done:
                     break
+            if episode == 0:
+                ep_rews[-1] = ep_rews[-1]
+            else:
+                ep_rews[-1] = ep_rews[-1] * 0.99 + ep_rews[-2] * 0.01              
+                    
         return ep_rews
 
 
@@ -185,26 +206,33 @@ if __name__ == '__main__':
         act_dim = env.action_space.shape[0]
         VAR = 2
         RANGE = env.action_space.high
-        actor = Actor(act_dim, is_continuious, 128, 'relu', 'tanh', var=VAR, action_range=RANGE)
-        critic = Critic(act_dim, 128, 'relu', None)
-        target_actor = Actor(act_dim, is_continuious, 128, 'relu', 'tanh', var=VAR, action_range=RANGE)
-        target_critic = Critic(act_dim, 128, 'relu', None)
-        
+        actor = Actor(act_dim, is_continuious, 64, 'relu', 'tanh', var=VAR, action_range=RANGE)
+        critic = Critic(act_dim, 64, 'relu', None)
+        target_actor = Actor(act_dim, is_continuious, 64, 'relu', 'tanh', var=VAR, action_range=RANGE)
+        target_critic = Critic(act_dim, 64, 'relu', None)
+    
+    '''
     obs = env.reset()
     state = obs.copy()
-    action = actor.get_nextAction(state[None, :])
-    q = critic.get_q([state, action][None, :])
-    target_action = actor.get_nextAction(state[None, :])
-    target_q = critic.get_q([state, action][None, :])
+    action = actor(state[None, :])
+    print(action, state)
+    q = critic.get_q([state[None, :], action])
+    target_action = target_actor(state[None, :])
+    target_q = target_critic.get_q([state[None, :], action])
     print(action, q, target_action, target_q) # 
+    '''
+    
+    
     
     MEMORY_CAPACITY = 10000
     replay_buffer = ReplayBuffer(MEMORY_CAPACITY)
-    agent = DDPGAgent(actor, target_actor, critic, target_critic, replay_buffer)
     
+    BATCH_SZ = 32
+    agent = DDPGAgent(actor, target_actor, critic, target_critic, replay_buffer)
+
     rewards_sum = agent.test(env)
     print("%d out of 200" % rewards_sum) # The score in one test with random agent.
-    rewards_history = agent.train(env)
+    rewards_history = agent.train(env, batch_sz=BATCH_SZ, episodes_num=300, maxStepsPerEpisode = 200)
     print("Finished training, testing...")
     print("%d out of 200" % agent.test(env)) # The score in one test with trained agent.
     
